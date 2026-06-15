@@ -1,0 +1,85 @@
+name: Daily Blog Videos
+
+# Free-tier runner (public repo = unlimited GitHub-hosted Actions minutes).
+# The Shotlee blog→video generator lives in the PRIVATE Shotlee repo
+# and is cloned at runtime via GH_PAT — no IP exposed here. Only schedule +
+# workflow_dispatch trigger this, so secrets / the MAM queue can't be abused.
+#
+# Generation count mirrors the posting ramp (W1 1/day → W2 2/day → W3+ 3/day).
+
+on:
+  schedule:
+    - cron: '30 4 * * *'
+  workflow_dispatch:
+    inputs:
+      count:
+        description: 'Videos to generate (blank = auto from ramp week)'
+        required: false
+        default: ''
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Clone private generator
+        run: |
+          git clone --depth 1 \
+            "https://x-access-token:${{ secrets.GH_PAT }}@github.com/${{ github.repository_owner }}/Shotlee.git" work
+
+      - name: Cache Remotion Chrome
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/remotion
+          key: remotion-chrome-${{ runner.os }}-v1
+
+      - name: Install system ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -version | head -1
+
+      - name: npm ci
+        working-directory: work/generator
+        run: npm ci --no-audit --no-fund
+
+      - name: Verify MAM auth (fail fast)
+        env:
+          BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
+        run: |
+          CODE=$(curl -sS -o /dev/null -w '%{http_code}' \
+            -X POST "https://21media-mam.vercel.app/api/shotlee/blog/complete" \
+            -H "Authorization: Bearer $BUFFER_PUSH_SECRET" \
+            -H 'Content-Type: application/json' -d '{}')
+          echo "auth probe → HTTP $CODE (400=ok, 401=bad secret)"
+          [ "$CODE" = "401" ] && { echo "::error::BUFFER_PUSH_SECRET wrong"; exit 1; } || true
+
+      - name: Compute count from ramp week
+        id: ramp
+        run: |
+          if [ -n "${{ inputs.count }}" ]; then
+            echo "count=${{ inputs.count }}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          START=$(date -d "2026-06-15" +%s)
+          NOW=$(date +%s)
+          DAYS=$(( (NOW - START) / 86400 ))
+          if   [ $DAYS -lt 7 ];  then C=1
+          elif [ $DAYS -lt 14 ]; then C=2
+          else                        C=3
+          fi
+          echo "ramp day $DAYS → count $C"
+          echo "count=$C" >> "$GITHUB_OUTPUT"
+
+      - name: Generate blog videos
+        working-directory: work/generator
+        env:
+          COUNT: ${{ steps.ramp.outputs.count }}
+          BUFFER_PUSH_SECRET: ${{ secrets.BUFFER_PUSH_SECRET }}
+          BLOB_READ_WRITE_TOKEN: ${{ secrets.BLOB_READ_WRITE_TOKEN }}
+          MAM_BASE: 'https://21media-mam.vercel.app'
+        run: node scripts/generate-blog-video.mjs
