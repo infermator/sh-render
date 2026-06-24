@@ -65,12 +65,13 @@ jobs:
             echo "count=${{ inputs.count }}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          START=$(date -d "2026-06-15" +%s)
+          # Mirrors MAM's posting ramp (slotBasesForApp): 2/day for the first
+          # ~1.5 weeks from the anchor, then 3/day. Keep this in sync with MAM.
+          START=$(date -d "2026-06-24" +%s)
           NOW=$(date +%s)
           DAYS=$(( (NOW - START) / 86400 ))
-          if   [ $DAYS -lt 7 ];  then C=1
-          elif [ $DAYS -lt 14 ]; then C=2
-          else                        C=3
+          if   [ $DAYS -lt 11 ]; then C=2
+          else                       C=3
           fi
           echo "ramp day $DAYS → count $C"
           echo "count=$C" >> "$GITHUB_OUTPUT"
